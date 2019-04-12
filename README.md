@@ -11,6 +11,7 @@ Yet another dependency injection library,
 - provide a better singleton pattern
 - supports both `struct` and `interface` injection
 - use only standard library
+- supports name module for mocking
 
 ## Example
 
