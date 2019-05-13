@@ -1,17 +1,24 @@
 package grab
 
 import (
-	"errors"
 	"reflect"
 	"sync"
 )
 
-var (
-	ErrSrcMustBePointer           = errors.New("src must be a pointer")
-	ErrDestMustBeDoublePointer    = errors.New("dest must be a pointer to a pointer type")
-	ErrDestMustBePointer          = errors.New("dest must be a pointer")
-	ErrDestInterfaceMustBePointer = errors.New("dest interface must be pass as pointer")
-	ErrCircularDependency         = errors.New("circular dependency detected")
+// E a simple type to make all errors const
+type E string
+
+func (e E) Error() string {
+	return string(e)
+}
+
+const (
+	ErrSrcMustBePointer           = E("src must be a pointer")
+	ErrDestMustBeDoublePointer    = E("dest must be a pointer to a pointer type")
+	ErrDestMustBePointer          = E("dest must be a pointer")
+	ErrDestInterfaceMustBePointer = E("dest interface must be pass as pointer")
+	ErrCircularDependency         = E("circular dependency detected")
+	ErrAlreadyMocked              = E("already mocked")
 )
 
 var empty struct{}
@@ -36,31 +43,6 @@ func Func(fn func(c Container) (interface{}, error)) Grabber {
 	return &grabber{fn: fn}
 }
 
-// NamedGrabber is a same as Grabber but contains name.
-// it mainly used for pre defined grabbers.
-type NamedGrabber interface {
-	Grabber
-	Name() string
-}
-
-type namedGrabber struct {
-	fn   func(c Container) (interface{}, error)
-	name string
-}
-
-func (n namedGrabber) Grab(c Container) (interface{}, error) {
-	return n.fn(c)
-}
-
-func (n namedGrabber) Name() string {
-	return n.name
-}
-
-// NamedFunc is a hellper function to create Grabber type with name
-func NamedFunc(name string, fn func(c Container) (interface{}, error)) Grabber {
-	return &namedGrabber{fn: fn, name: name}
-}
-
 // Container is a base interface for this package. It provides the basic
 // interface to load an object using it's grabber func
 type Container interface {
@@ -70,78 +52,99 @@ type Container interface {
 // Repository is an implementation for Container interface. It is thread safe
 // it also support circular dependency detection.
 type Repository struct {
-	predefinedGrabbers map[string]Grabber
-	grabbers           map[Grabber]interface{}
-	pendding           map[Grabber]struct{}
-	mtx                sync.RWMutex
+	grabbers map[Grabber]interface{}
+	pendding map[Grabber]struct{}
+	mtx      sync.RWMutex
 }
 
 // Get accepts a pointer to any types (struct or interface), and grabber.
-func (s *Repository) Get(dest interface{}, g Grabber) error {
+func (r *Repository) Get(dest interface{}, g Grabber) error {
 	var err error
-
-	// tries to see if given grabber already been defined
-	// during creation of container
-	if grab, ok := g.(NamedGrabber); ok {
-		name := grab.Name()
-		if name != "" {
-			s.mtx.RLock()
-			if grab, ok := s.predefinedGrabbers[name]; ok {
-				g = grab
-			}
-			s.mtx.Unlock()
-		}
-	}
 
 	// we need the read lock here to make sure that
 	// no one can update the grabbers map
-	s.mtx.RLock()
-	value, ok := s.grabbers[g]
-	s.mtx.RUnlock()
+	r.mtx.RLock()
+	value, ok := r.grabbers[g]
+	r.mtx.RUnlock()
 
 	if ok {
 		return assign(dest, value)
 	}
 
-	s.mtx.RLock()
-	_, ok = s.pendding[g]
-	s.mtx.RUnlock()
+	r.mtx.RLock()
+	_, ok = r.pendding[g]
+	r.mtx.RUnlock()
 
 	if ok {
 		return ErrCircularDependency
 	}
 
-	s.mtx.Lock()
-	s.pendding[g] = empty
-	s.mtx.Unlock()
+	r.mtx.Lock()
+	r.pendding[g] = empty
+	r.mtx.Unlock()
 
-	value, err = g.Grab(s)
+	value, err = g.Grab(r)
 	if err != nil {
-		s.mtx.Lock()
-		delete(s.pendding, g)
-		s.mtx.Unlock()
+		r.mtx.Lock()
+		delete(r.pendding, g)
+		r.mtx.Unlock()
 		return err
 	}
 
-	s.mtx.Lock()
-	s.grabbers[g] = value
-	delete(s.pendding, g)
-	s.mtx.Unlock()
+	r.mtx.Lock()
+	r.grabbers[g] = value
+	delete(r.pendding, g)
+	r.mtx.Unlock()
 
 	return assign(dest, value)
 }
 
 // New initialize the Repository container. Repository is Thread-Safe
-func New(grabs ...NamedGrabber) *Repository {
-	predefinedGrabbers := make(map[string]Grabber, 0)
-	for _, grab := range grabs {
-		predefinedGrabbers[grab.Name()] = grab
+func New() *Repository {
+	return &Repository{
+		grabbers: make(map[Grabber]interface{}, 0),
+		pendding: make(map[Grabber]struct{}, 0),
+	}
+}
+
+// RepositoryWithMock is a composite struct which adds a new method call Mock
+// It also wrap Get to returns value that has already been mocked
+type RepositoryWithMock struct {
+	*Repository
+	mocked map[Grabber]interface{}
+}
+
+// Get this method has been overrid to provide mock system
+func (r *RepositoryWithMock) Get(dest interface{}, g Grabber) error {
+	r.mtx.Lock()
+	if value, ok := r.mocked[g]; ok {
+		r.mtx.Unlock()
+		return assign(dest, value)
+	}
+	r.mtx.Unlock()
+
+	// go back to regular routine
+	return r.Repository.Get(dest, g)
+}
+
+// Mock simply return a new value to provided Grabber
+func (r *RepositoryWithMock) Mock(g Grabber, val interface{}) error {
+	r.mtx.Lock()
+	defer r.mtx.Unlock()
+
+	if _, ok := r.mocked[g]; ok {
+		return ErrAlreadyMocked
 	}
 
-	return &Repository{
-		predefinedGrabbers: predefinedGrabbers,
-		grabbers:           make(map[Grabber]interface{}, 0),
-		pendding:           make(map[Grabber]struct{}, 0),
+	r.mocked[g] = val
+	return nil
+}
+
+// Mock returns a Repository with Mock capability
+func Mock() *RepositoryWithMock {
+	return &RepositoryWithMock{
+		Repository: New(),
+		mocked:     make(map[Grabber]interface{}, 0),
 	}
 }
 

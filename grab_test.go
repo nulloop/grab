@@ -157,3 +157,42 @@ func TestInitializationFails(t *testing.T) {
 		t.Fatalf("expected oops error but got %s", err)
 	}
 }
+
+type MockTestData struct {
+	Name string
+}
+
+func TestMockDependency(t *testing.T) {
+	container := grab.Mock()
+
+	GrabTest := grab.Func(func(c grab.Container) (interface{}, error) {
+		return &MockTestData{
+			Name: "Bye",
+		}, nil
+	})
+
+	err := container.Mock(GrabTest, &MockTestData{
+		Name: "Hello",
+	})
+	if err != nil {
+		t.Error(err)
+	}
+
+	var val *MockTestData
+
+	err = container.Get(&val, GrabTest)
+	if err != nil {
+		t.Error(err)
+	}
+
+	if val.Name != "Hello" {
+		t.Errorf("expected %s but got %s", "Hello", val.Name)
+	}
+
+	err = container.Mock(GrabTest, &MockTestData{
+		Name: "Hello 2",
+	})
+	if err != grab.ErrAlreadyMocked {
+		t.Errorf("should got '%s' error but got %s", grab.ErrAlreadyMocked, err)
+	}
+}
