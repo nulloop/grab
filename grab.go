@@ -54,12 +54,20 @@ type Container interface {
 type Repository struct {
 	grabbers map[Grabber]interface{}
 	pendding map[Grabber]struct{}
+	mocked   map[Grabber]interface{}
 	mtx      sync.RWMutex
 }
 
 // Get accepts a pointer to any types (struct or interface), and grabber.
 func (r *Repository) Get(dest interface{}, g Grabber) error {
 	var err error
+
+	r.mtx.Lock()
+	if value, ok := r.mocked[g]; ok {
+		r.mtx.Unlock()
+		return assign(dest, value)
+	}
+	r.mtx.Unlock()
 
 	// we need the read lock here to make sure that
 	// no one can update the grabbers map
@@ -99,36 +107,8 @@ func (r *Repository) Get(dest interface{}, g Grabber) error {
 	return assign(dest, value)
 }
 
-// New initialize the Repository container. Repository is Thread-Safe
-func New() *Repository {
-	return &Repository{
-		grabbers: make(map[Grabber]interface{}, 0),
-		pendding: make(map[Grabber]struct{}, 0),
-	}
-}
-
-// RepositoryWithMock is a composite struct which adds a new method call Mock
-// It also wrap Get to returns value that has already been mocked
-type RepositoryWithMock struct {
-	*Repository
-	mocked map[Grabber]interface{}
-}
-
-// Get this method has been overrid to provide mock system
-func (r *RepositoryWithMock) Get(dest interface{}, g Grabber) error {
-	r.mtx.Lock()
-	if value, ok := r.mocked[g]; ok {
-		r.mtx.Unlock()
-		return assign(dest, value)
-	}
-	r.mtx.Unlock()
-
-	// go back to regular routine
-	return r.Repository.Get(dest, g)
-}
-
 // Mock simply return a new value to provided Grabber
-func (r *RepositoryWithMock) Mock(g Grabber, val interface{}) error {
+func (r *Repository) Mock(g Grabber, val interface{}) error {
 	r.mtx.Lock()
 	defer r.mtx.Unlock()
 
@@ -140,11 +120,12 @@ func (r *RepositoryWithMock) Mock(g Grabber, val interface{}) error {
 	return nil
 }
 
-// Mock returns a Repository with Mock capability
-func Mock() *RepositoryWithMock {
-	return &RepositoryWithMock{
-		Repository: New(),
-		mocked:     make(map[Grabber]interface{}, 0),
+// New initialize the Repository container. Repository is Thread-Safe
+func New() *Repository {
+	return &Repository{
+		grabbers: make(map[Grabber]interface{}, 0),
+		pendding: make(map[Grabber]struct{}, 0),
+		mocked:   make(map[Grabber]interface{}, 0),
 	}
 }
 

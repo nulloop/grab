@@ -163,7 +163,7 @@ type MockTestData struct {
 }
 
 func TestMockDependency(t *testing.T) {
-	container := grab.Mock()
+	container := grab.New()
 
 	GrabTest := grab.Func(func(c grab.Container) (interface{}, error) {
 		return &MockTestData{
